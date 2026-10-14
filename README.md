@@ -1,63 +1,86 @@
-# G1-SSH
-How to connect to G1 more easily
+mkdir -p ~/g1-internet-sharing
+cd ~/g1-internet-sharing
 
+cat << 'EOF' > setup_host.sh
 #!/bin/bash
+# Uso: ./setup_host.sh <interface_wifi> <interface_cabo>
+# Exemplo: ./setup_host.sh wlp1s0 enx00e04c68001a
 
-# ==========================================
-# CONFIGURAÇÃO DE REDES (Altere aqui se necessário)
-# ==========================================
-WIFI_IFACE="wlp1s0"          # Sua interface de rede Wi-Fi (verifique com 'ip a')
-ETH_IFACE="enx00e04c68001a"  # Sua interface de rede cabeada/USB (verifique com 'ip a')
-# ==========================================
+INTERNET_IFACE=${1:-wlp1s0}
+ROBOT_IFACE=${2:-enx00e04c68001a}
 
-echo "Ativando compartilhamento de internet para o robô G1..."
+echo "==========================================="
+echo " Configurando Base para Roteamento NAT"
+echo " Wi-Fi: $INTERNET_IFACE \vert{} Cabo:$ROBOT_IFACE"
+echo "==========================================="
 
-# Habilita o IP forwarding
-sysctl -w net.ipv4.ip_forward=1
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo iptables -t nat -A POSTROUTING -o $INTERNET_IFACE -j MASQUERADE
+sudo iptables -A FORWARD -i $ROBOT_IFACE -o$INTERNET_IFACE -j ACCEPT
+sudo iptables -A FORWARD -i $INTERNET_IFACE -o$ROBOT_IFACE -m state --state RELATED,ESTABLISHED -j ACCEPT
 
-# Configura as regras do iptables (NAT)
-iptables -t nat -A POSTROUTING -o "$WIFI_IFACE" -j MASQUERADE
-iptables -A FORWARD -i "$ETH_IFACE" -o "$WIFI_IFACE" -j ACCEPT
-iptables -A FORWARD -i "$WIFI_IFACE" -o "$ETH_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+echo "Roteamento ativado na base!"
+echo "Nota: Para salvar permanentemente, rode 'sudo netfilter-persistent save'"
+EOF
 
-echo "Sucesso! Internet compartilhada de $WIFI_IFACE para $ETH_IFACE."
-
+cat << 'EOF' > setup_robot.sh
 #!/bin/bash
+# Uso: ./setup_robot.sh <ip_da_base_no_cabo>
+# Exemplo: ./setup_robot.sh 192.168.123.99
 
-# ==========================================
-# CONFIGURAÇÃO DE REDES (Deve ser a mesma do ativador)
-# ==========================================
-WIFI_IFACE="wlp1s0"          # Sua interface de rede Wi-Fi
-ETH_IFACE="enx00e04c68001a"  # Sua interface de rede cabeada/USB
-# ==========================================
+HOST_IP=${1:-192.168.123.99}
 
-echo "Desativando compartilhamento de internet e limpando regras..."
+echo "Configurando G1 para usar $HOST_IP como gateway..."
 
-# Remove as regras do iptables de forma segura
-iptables -t nat -D POSTROUTING -o "$WIFI_IFACE" -j MASQUERADE 2>/dev/null
-iptables -D FORWARD -i "$ETH_IFACE" -o "$WIFI_IFACE" -j ACCEPT 2>/dev/null
-iptables -D FORWARD -i "$WIFI_IFACE" -o "$ETH_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
+sudo ip route add default via $HOST_IP
+echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf > /dev/null
 
-# Desativa o IP forwarding
-sysctl -w net.ipv4.ip_forward=0
+echo "Testando a conexão com a internet..."
+ping -c 4 8.8.8.8
 
-echo "Compartilhamento desativado. Conexões livres!"
+echo "Internet configurada com sucesso no G1!"
+EOF
 
-# Share Internet to Unitree G1 Robot
+cat << 'EOF' > share-to-robot.sh
+#!/bin/bash
+# Automação completa: Configura a base e envia os comandos via SSH para o G1
 
-Scripts em Bash para compartilhar e desativar a conexão de internet (Wi-Fi) do computador host para o robô Unitree G1 via rede cabeada (Ethernet).
+WIFI="wlp1s0"
+CABO="enx00e04c68001a"
+MEU_IP_CABO="192.168.123.99"
+ROBOT_IP="192.168.123.164" 
+ROBOT_USER="unitree"
 
-## ⚙️ Como Alterar as Redes
-Antes de usar, abra os arquivos `share-to-robot.sh` e `stop-share.sh` e ajuste as variáveis no topo de cada arquivo de acordo com a sua máquina (você pode descobrir os nomes rodando o comando `ip a` no terminal):
-* `WIFI_IFACE`: Nome da sua placa Wi-Fi (ex: `wlp1s0`).
-* `ETH_IFACE`: Nome da sua placa de rede cabeada ou adaptador USB (ex: `enx00e04c68001a`).
+echo "1. Configurando roteamento na máquina local..."
+sudo ./setup_host.sh $WIFI$CABO
 
-## 🚀 Como Usar
+echo "2. Copiando script de rede para o G1 ($ROBOT_IP)..."
+scp setup_robot.sh $ROBOT_USER@$ROBOT_IP:/home/$ROBOT_USER/
 
-### 1. Ativar o compartilhamento de internet para o robô:
-```bash
-sudo chmod +x share-to-robot.sh
-sudo ./share-to-robot.sh
+echo "3. Executando configuração dentro do G1..."
+ssh $ROBOT_USER@$ROBOT_IP "chmod +x setup_robot.sh && sudo ./setup_robot.sh $MEU_IP_CABO"
 
-sudo chmod +x stop-share.sh
-sudo ./stop-share.sh
+echo "==========================================="
+echo " Processo finalizado! G1 online."
+echo "==========================================="
+EOF
+
+cat << 'EOF' > README.md
+# G1 Internet Sharing
+
+Scripts para roteamento automático de internet (NAT/Masquerade) de uma base Linux para robôs Unitree G1 via cabo Ethernet. Ideal para atualizações, clonagem de repositórios ROS 2 e instalação de pacotes diretamente no hardware do robô.
+
+## Arquivos
+* `setup_host.sh`: Habilita o IP Forwarding e configura o iptables na máquina base.
+* `setup_robot.sh`: Define a base como gateway e configura o DNS (8.8.8.8) dentro do robô.
+* `share-to-robot.sh`: Script principal que automatiza todo o processo via SSH.
+
+## Como Usar
+1. Clone o repositório na sua máquina base.
+2. Dê permissão de execução: `chmod +x *.sh`
+3. Conecte o cabo Ethernet entre a base e o G1 e rode: `./share-to-robot.sh`
+EOF
+
+chmod +x *.sh
+echo "Arquivos criados com sucesso na pasta ~/g1-internet-sharing"
+ls -la
